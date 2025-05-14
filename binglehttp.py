@@ -45,9 +45,15 @@ def load_root_directories():
                     print(f"Warning: {ROOT_DIR_CONFIG_FILE} has unknown format or is empty. Defaulting to ['uploads'].")
                     return ['uploads']
             except json.JSONDecodeError:
-                print(f"Error decoding JSON from {ROOT_DIR_CONFIG_FILE}. Defaulting to ['uploads'].")
-                return ['uploads']
-    return ['uploads']
+                print(f"Error decoding JSON from {ROOT_DIR_CONFIG_FILE}. Defaulting to ['uploads'] and attempting to save default.")
+                default_dirs = ['uploads']
+                save_root_directories(default_dirs) # Save the default
+                return default_dirs
+    # File does not exist, so create it with default
+    print(f"{ROOT_DIR_CONFIG_FILE} not found. Initializing with default ['uploads'] and creating file.")
+    default_dirs = ['uploads']
+    save_root_directories(default_dirs) # Create the file with default content
+    return default_dirs
 
 def save_root_directories(root_dirs_list):
     # Ensure it's always a list of non-empty strings and not empty itself

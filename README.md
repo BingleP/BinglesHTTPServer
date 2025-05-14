@@ -39,6 +39,85 @@ BingleHTTPFileServer is a Python-based secure HTTP server designed for easy file
     *   `users.json` (for user accounts) is created with a default admin if missing.
     *   `root_dir.json` (for root directories) is created with a default 'uploads' directory if missing.
     *   `public_links.json` (for shared links) is created when the first link is generated or managed.
+*   **Path traversal attempts in file operations, public links, and root directory paths are checked and blocked.**
+
+## Docker Setup (Recommended for Deployment)
+
+This project includes a `Dockerfile` to easily build and run BingleHTTPFileServer in a containerized environment.
+
+### Prerequisites for Docker
+
+*   Docker installed on your system. Visit [docker.com](https://www.docker.com/get-started) for installation instructions.
+
+### Building the Docker Image
+
+1.  Navigate to the root directory of the project (where the `Dockerfile` is located).
+2.  Run the build command:
+    ```bash
+    docker build -t binglehttpfileserver:latest .
+    ```
+    You can replace `binglehttpfileserver:latest` with your preferred image name and tag (e.g., `yourusername/binglehttpfileserver:0.1`).
+
+### Running the Docker Container
+
+To run the server, you need to map a local directory on your host machine to a directory inside the container for persistent data storage. This is crucial for `users.json`, `root_dir.json`, `public_links.json`, and any file storage directories (like the default `uploads` or others you configure).
+
+1.  **Create data directories on your host machine (if they don't exist):**
+    For example, you might create a main data directory and subdirectories:
+    ```bash
+    mkdir -p ./bingle_server_data/config
+    mkdir -p ./bingle_server_data/uploads_root # Default uploads directory
+    # If you plan to use BingleLogo.png and favicon.ico from your host:
+    # mkdir -p ./bingle_server_data/assets
+    # cp BingleLogo.png ./bingle_server_data/assets/BingleLogo.png
+    # cp favicon.ico ./bingle_server_data/assets/favicon.ico
+    ```
+    The `config` directory will store `users.json`, `root_dir.json`, and `public_links.json`.
+    The `uploads_root` directory will be the primary storage for files if you use the default 'uploads' root.
+
+2.  **Run the Docker container with volume mounts:**
+
+    ```bash
+    docker run -d \
+        -p 6799:6799 \
+        -v $(pwd)/bingle_server_data/config:/app \
+        -v $(pwd)/bingle_server_data/uploads_root:/app/uploads \
+        --name mybinglefileserver \
+        binglehttpfileserver:latest
+    ```
+
+    **Explanation of the command:**
+    *   `-d`: Run the container in detached mode (in the background).
+    *   `-p 6799:6799`: Map port 6799 on your host to port 6799 in the container.
+    *   `-v $(pwd)/bingle_server_data/config:/app`: This is the crucial part for your main config files. It mounts the `./bingle_server_data/config` directory from your host into the `/app` directory *inside the container*. When `binglehttp.py` (running in `/app`) creates/reads `users.json`, `root_dir.json`, or `public_links.json`, it will actually be using the files in your host's `./bingle_server_data/config` directory.
+        *   **Important Note on `root_dir.json` Paths**: When you configure root directories using the admin panel *while running inside Docker*, the paths you specify for new root directories must be paths *accessible from within the container*. For example, if you mount another host directory like `-v /path/on/host/my_other_files:/data/my_other_files_in_container`, then in the admin UI, you would add `/data/my_other_files_in_container` as a root directory.
+    *   `-v $(pwd)/bingle_server_data/uploads_root:/app/uploads`: This mounts your host's `./bingle_server_data/uploads_root` directory to `/app/uploads` inside the container. If `root_dir.json` (in the mapped `/app` config volume) defaults to or contains `"uploads"`, the server will use this mounted volume for file storage. 
+    *   `--name mybinglefileserver`: Assigns a name to your running container for easier management.
+    *   `binglehttpfileserver:latest`: The name of the image you built.
+
+3.  **Accessing the server:**
+    Once the container is running, you can access the server at `http://localhost:6799` in your web browser.
+
+4.  **Managing custom `BingleLogo.png` and `favicon.ico` with Docker:**
+    The `Dockerfile` copies these files into the image as defaults. If you want to use your own custom versions from the host without rebuilding the image, you can mount them specifically:
+    ```bash
+    docker run -d \
+        -p 6799:6799 \
+        -v $(pwd)/bingle_server_data/config:/app \
+        -v $(pwd)/bingle_server_data/uploads_root:/app/uploads \
+        -v $(pwd)/path_to_your/BingleLogo.png:/app/BingleLogo.png \
+        -v $(pwd)/path_to_your/favicon.ico:/app/favicon.ico \
+        --name mybinglefileserver \
+        binglehttpfileserver:latest
+    ```
+    Replace `$(pwd)/path_to_your/` with the actual path to your custom image files on the host.
+
+### Stopping and Removing the Container
+
+*   To stop: `docker stop mybinglefileserver`
+*   To remove: `docker rm mybinglefileserver`
+
+Your data in the `./bingle_server_data` directory on your host will persist even if the container is stopped or removed.
 
 ## Prerequisites
 
