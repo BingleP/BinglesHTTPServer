@@ -627,29 +627,33 @@ class SecureHTTPRequestHandler(BaseHTTPRequestHandler):
             return
 
         range_header = self.headers.get('Range')
-        start_byte, end_byte = 0, file_size - 1 # Default to serving the entire file
+        start_byte, end_byte = 0, file_size - 1
         status_code = 200
+        content_range_str = None # Variable to store Content-Range header value for 206
 
         if file_size == 0:
             if range_header and range_header.strip().lower().startswith('bytes='):
-                self.send_header('Content-Range', f'bytes */0')
-                self.send_error(416, 'Range Not Satisfiable (file is empty)')
-                return
-            else: # Serve empty file with 200 OK
+                # For an empty file, a range request is unsatisfiable.
+                return self.send_416_range_not_satisfiable(0) # file_size is 0
+            else: # Serve empty file with 200 OK if no range or invalid range header
                 status_code = 200
-                # Headers will be set below before sending body
-        elif range_header: # File is not empty, and range header is present
+                # No Content-Range. Content-Length will be 0.
+        elif range_header:
             range_header_value = range_header.strip()
             if range_header_value.lower().startswith('bytes='):
                 range_specifier = range_header_value.split('=', 1)[1].strip()
 
                 if range_specifier == "0-": # Specific case for TU compatibility
                     status_code = 200
-                    # start_byte and end_byte default to 0 and file_size - 1
-                    # No Content-Range header for this 200 OK response.
+                    # start_byte and end_byte are already 0 and file_size - 1 by default
+                    # For TU, send 200 OK but INCLUDE Content-Range for the full file.
+                    if file_size > 0:
+                        content_range_str = f'bytes 0-{file_size-1}/{file_size}'
+                    else: # file_size is 0
+                        content_range_str = f'bytes */0' # As per RFC 7233 for 416, but here on a 200 for an empty file.
+                                                        # Or, could leave it None. Let's try with it for consistency.
                 elif not range_specifier: # e.g. "Range: bytes=" (empty specifier)
-                    self.send_header('Content-Range', f'bytes */{file_size}')
-                    self.send_error(416, 'Range Not Satisfiable (empty byte range specifier)'); return
+                    return self.send_416_range_not_satisfiable(file_size)
                 else: # Other range specifiers that are not exactly "0-"
                     match_start_end = re.match(r'^(\d+)-(\d*)?$', range_specifier)
                     match_suffix = re.match(r'^-(\d+)$', range_specifier)
@@ -662,39 +666,42 @@ class SecureHTTPRequestHandler(BaseHTTPRequestHandler):
                                 end_byte = min(int(match_start_end.group(2)), file_size - 1)
                             # else end_byte remains file_size - 1 (correct for open-ended)
                             if end_byte < start_byte: # e.g. bytes=500-400, after adjustments
-                                 self.send_header('Content-Range', f'bytes */{file_size}')
-                                 self.send_error(416, 'Range Not Satisfiable (end before start)'); return
+                                 return self.send_416_range_not_satisfiable(file_size)
                             status_code = 206
-                            self.send_header('Content-Range', f'bytes {start_byte}-{end_byte}/{file_size}')
-                        else:
-                            self.send_header('Content-Range', f'bytes */{file_size}')
-                            self.send_error(416, 'Range Not Satisfiable (start >= file size)'); return
+                            content_range_str = f'bytes {start_byte}-{end_byte}/{file_size}'
+                        else: # req_start >= file_size
+                            return self.send_416_range_not_satisfiable(file_size)
                     elif match_suffix:
                         suffix_length = int(match_suffix.group(1))
                         if suffix_length == 0:
-                            self.send_header('Content-Range', f'bytes */{file_size}')
-                            self.send_error(416, 'Range Not Satisfiable (suffix length 0)'); return
+                            return self.send_416_range_not_satisfiable(file_size)
                         
                         start_byte = max(0, file_size - suffix_length)
                         # end_byte remains file_size - 1
                         status_code = 206
-                        self.send_header('Content-Range', f'bytes {start_byte}-{end_byte}/{file_size}')
+                        content_range_str = f'bytes {start_byte}-{end_byte}/{file_size}'
                     else:
-                        # Unrecognized bytes= format (but not empty and not "0-"). 
-                        # Respond with 206 for the *entire* file, as per previous attempts.
+                        # Unrecognized bytes= format. Defaulting to 206 for the entire file as per previous logic.
                         start_byte = 0
                         end_byte = file_size - 1
                         status_code = 206
-                        self.send_header('Content-Range', f'bytes {start_byte}-{end_byte}/{file_size}')
+                        content_range_str = f'bytes {start_byte}-{end_byte}/{file_size}'
             # else: Range header present, but not 'bytes='. Ignore it, serve full file (status_code remains 200).
         # else: No range header. Serve full file (status_code remains 200).
         
+        # --- Send Response and Headers --- 
         self.send_response(status_code)
+        
         content_length_to_send = (end_byte - start_byte) + 1 if file_size > 0 else 0
+        
+        # Always send Accept-Ranges if the resource is servable with ranges, even for 200 responses.
+        self.send_header('Accept-Ranges', 'bytes')
+
+        if content_range_str: # Send Content-Range if it was set (for 206 or the 200 OK TU case)
+            self.send_header('Content-Range', content_range_str)
         
         mime_type, _ = mimetypes.guess_type(file_path_abs)
         self.send_header('Content-Type', mime_type or 'application/octet-stream')
-        self.send_header('Accept-Ranges', 'bytes')
         self.send_header('Content-Length', str(content_length_to_send))
         self.send_header('Access-Control-Allow-Origin', '*')
 
@@ -702,10 +709,14 @@ class SecureHTTPRequestHandler(BaseHTTPRequestHandler):
         is_inline = any(mime_type.startswith(prefix) for prefix in inline_mime_types if mime_type)
         disposition = 'inline' if is_inline else f'attachment; filename="{os.path.basename(file_path_abs)}"'
         self.send_header('Content-Disposition', disposition)
+        
         self.end_headers()
 
+        if self.command == 'HEAD': # For HEAD requests, body is not sent.
+            return
+
         if file_size == 0 or content_length_to_send == 0:
-            # No body to write for an empty file or zero-length range
+            # No body to write for an empty file or zero-length range if not HEAD
             return
 
         try:
@@ -746,6 +757,18 @@ class SecureHTTPRequestHandler(BaseHTTPRequestHandler):
                     print(f"Further error trying to send 500 for general error: {e_send_500}")
             # If headers were already sent, or attribute is missing, we can't send another HTTP error.
             # The original error 'e' is printed above.
+
+    def send_416_range_not_satisfiable(self, complete_length):
+        self.send_response(416)
+        self.send_header('Content-Range', f'bytes */{complete_length}')
+        self.send_header('Content-Type', 'text/plain; charset=utf-8')
+        error_message = b"416 Range Not Satisfiable"
+        self.send_header('Content-Length', str(len(error_message)))
+        # According to RFC 7230, a server sending 416 MAY include Connection: close
+        # self.send_header('Connection', 'close') 
+        self.end_headers()
+        if self.command != 'HEAD':
+            self.wfile.write(error_message)
 
     def send_response_json_error(self, code, message):
         self.send_response(code)
