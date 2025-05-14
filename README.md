@@ -240,5 +240,3 @@ Once logged in as an admin, the "Admin Menu" button provides access to:
 *   Session tokens are tied to the user's IP address.
 *   Session tokens have an expiration time (`TOKEN_EXPIRATION_SECONDS` in `binglehttp.py`). Active file transfers can extend token life.
 *   Path traversal attempts in file operations, public links, and root directory paths are checked and blocked.
-
-This README provides a good overview. You can copy and paste this content into your `README.md` file. 
