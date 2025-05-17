@@ -27,42 +27,75 @@ def load_root_directories():
                 if isinstance(data, dict) and 'root_dirs' in data and isinstance(data['root_dirs'], list):
                     loaded_dirs = data.get('root_dirs')
                     if not loaded_dirs:
-                        print(f"Warning: 'root_dirs' in {ROOT_DIR_CONFIG_FILE} is empty. Defaulting to ['uploads'].")
-                        return ['uploads']
-                    # Filter out empty strings or None from the list
-                    valid_dirs = [d for d in loaded_dirs if d and isinstance(d, str)]
+                        print(f"Warning: 'root_dirs' in {ROOT_DIR_CONFIG_FILE} is empty. Defaulting to normalized ['uploads'].")
+                        return [os.path.normpath(os.path.abspath('uploads'))]
+                    # Filter out empty strings or None from the list, then normalize
+                    valid_dirs = []
+                    for d_raw in loaded_dirs:
+                        if d_raw and isinstance(d_raw, str):
+                            # Normalize and absolutize paths
+                            normalized_path = os.path.normpath(os.path.abspath(d_raw))
+                            if normalized_path not in valid_dirs: # Avoid duplicates after normalization
+                                valid_dirs.append(normalized_path)
+                        else:
+                            print(f"Warning: Invalid entry '{d_raw}' in {ROOT_DIR_CONFIG_FILE} will be skipped.")
+                    
                     if not valid_dirs:
-                        print(f"Warning: 'root_dirs' in {ROOT_DIR_CONFIG_FILE} contained only invalid entries. Defaulting to ['uploads'].")
-                        return ['uploads']
+                        print(f"Warning: 'root_dirs' in {ROOT_DIR_CONFIG_FILE} contained only invalid entries after processing. Defaulting to normalized ['uploads'].")
+                        return [os.path.normpath(os.path.abspath('uploads'))]
                     return valid_dirs
                 elif isinstance(data, dict) and 'root_dir' in data and isinstance(data['root_dir'], str): # Old format
-                    old_root = data['root_dir']
-                    print(f"Migrating old 'root_dir' ({old_root}) format in {ROOT_DIR_CONFIG_FILE} to ['{old_root}'].")
-                    ROOT_DIRECTORIES = [old_root] if old_root else ['uploads']
-                    save_root_directories(ROOT_DIRECTORIES)
+                    old_root_raw = data['root_dir']
+                    print(f"Migrating old 'root_dir' ({old_root_raw}) format in {ROOT_DIR_CONFIG_FILE}.")
+                    # Normalize and absolutize
+                    normalized_old_root = os.path.normpath(os.path.abspath(old_root_raw)) if old_root_raw else ''
+                    
+                    if normalized_old_root:
+                        ROOT_DIRECTORIES = [normalized_old_root]
+                    else: # If old_root_raw was empty or became so
+                        print(f"Warning: Old 'root_dir' was empty. Defaulting to normalized ['uploads'].")
+                        ROOT_DIRECTORIES = [os.path.normpath(os.path.abspath('uploads'))]
+                    
+                    save_root_directories(ROOT_DIRECTORIES) # save_root_directories will save these normalized paths
                     return ROOT_DIRECTORIES
                 else:
-                    print(f"Warning: {ROOT_DIR_CONFIG_FILE} has unknown format or is empty. Defaulting to ['uploads'].")
-                    return ['uploads']
+                    print(f"Warning: {ROOT_DIR_CONFIG_FILE} has unknown format or is empty. Defaulting to normalized ['uploads'].")
+                    return [os.path.normpath(os.path.abspath('uploads'))]
             except json.JSONDecodeError:
-                print(f"Error decoding JSON from {ROOT_DIR_CONFIG_FILE}. Defaulting to ['uploads'] and attempting to save default.")
-                default_dirs = ['uploads']
+                print(f"Error decoding JSON from {ROOT_DIR_CONFIG_FILE}. Defaulting to normalized ['uploads'] and attempting to save default.")
+                default_dirs = [os.path.normpath(os.path.abspath('uploads'))]
                 save_root_directories(default_dirs) # Save the default
+                print(f"INFO: Attempted to save default configuration to {ROOT_DIR_CONFIG_FILE} after JSON decode error.") # Added INFO line
                 return default_dirs
     # File does not exist, so create it with default
-    print(f"{ROOT_DIR_CONFIG_FILE} not found. Initializing with default ['uploads'] and creating file.")
-    default_dirs = ['uploads']
+    print(f"{ROOT_DIR_CONFIG_FILE} not found. Initializing with default normalized ['uploads'] and creating file.")
+    default_dirs = [os.path.normpath(os.path.abspath('uploads'))] # Normalize default too
     save_root_directories(default_dirs) # Create the file with default content
+    print(f"INFO: Attempted to save default configuration to {ROOT_DIR_CONFIG_FILE} because it was not found.") # Added INFO line
     return default_dirs
 
 def save_root_directories(root_dirs_list):
-    # Ensure it's always a list of non-empty strings and not empty itself
-    valid_dirs = [d for d in root_dirs_list if d and isinstance(d, str)]
-    if not valid_dirs:
-        print("Error: Attempted to save an invalid or empty root directories list. Saving ['uploads'] instead.")
-        valid_dirs = ['uploads']
+    # Ensure it's always a list of non-empty, unique, normalized, absolute strings
+    processed_dirs = []
+    if isinstance(root_dirs_list, list):
+        for d_raw in root_dirs_list:
+            if d_raw and isinstance(d_raw, str):
+                # Paths should already be normalized/absolute if coming from load_root_directories or add_root_dir
+                # but we can re-normalize here as a safeguard, though it might be redundant if upstream logic is correct.
+                # For now, assume paths are already processed correctly by callers.
+                # normalized_path = os.path.normpath(os.path.abspath(d_raw)) # Potentially redundant
+                normalized_path = d_raw # Assuming d_raw is already processed
+                if normalized_path not in processed_dirs:
+                    processed_dirs.append(normalized_path)
+            else:
+                print(f"Warning: Attempted to save invalid directory entry '{d_raw}'. It will be skipped.")
+    
+    if not processed_dirs:
+        print("Error: Attempted to save an invalid or empty root directories list. Saving normalized ['uploads'] instead.")
+        processed_dirs = [os.path.normpath(os.path.abspath('uploads'))]
+        
     with open(ROOT_DIR_CONFIG_FILE, 'w') as f:
-        json.dump({'root_dirs': valid_dirs}, f, indent=4)
+        json.dump({'root_dirs': processed_dirs}, f, indent=4)
 
 ROOT_DIRECTORIES = load_root_directories()
 
@@ -521,9 +554,23 @@ class SecureHTTPRequestHandler(BaseHTTPRequestHandler):
                 relative_file_path = unquote(encoded_relative_file_path)
             except Exception as e: self.send_error_text(400, f"Malformed public link (decoding error: {e})."); return
 
+            # --- Start Debug Logging for Public Link Root Validation ---
+            print(f"DEBUG: Public link access attempt.")
+            print(f"  Raw URL path part: {path_part}")
+            print(f"  Path segments: {path_segments}")
+            print(f"  Extracted encoded_root_dir_path: '{encoded_root_dir_path}'")
+            print(f"  Decoded actual_root_dir_path: '{actual_root_dir_path}' (Type: {type(actual_root_dir_path)})")
+            print(f"  Current ROOT_DIRECTORIES on server (count: {len(ROOT_DIRECTORIES)}):")
+            for i, r_dir_server in enumerate(ROOT_DIRECTORIES):
+                print(f"    [{i}]: '{r_dir_server}' (Type: {type(r_dir_server)})")
+                if r_dir_server == actual_root_dir_path:
+                    print(f"      DEBUG: Exact string match found with ROOT_DIRECTORIES[{i}].")
+            # --- End Debug Logging ---
+
             if actual_root_dir_path not in ROOT_DIRECTORIES:
+                print(f"ERROR: Public link root invalid. Decoded path '{actual_root_dir_path}' was NOT found in the server's current ROOT_DIRECTORIES list.")
                 self.send_error_text(403, "Public link root invalid."); return
-            if '..' in relative_file_path or relative_file_path.startswith(('/', '\\\\')):
+            if '..' in relative_file_path or relative_file_path.startswith(('/', '\\')):
                 self.send_error_text(403, "Public link file path invalid (traversal attempt)."); return
 
             composite_key_for_lookup = f"{actual_root_dir_path}|{relative_file_path}"
@@ -532,8 +579,24 @@ class SecureHTTPRequestHandler(BaseHTTPRequestHandler):
             if not stored_key or public_key_from_query != stored_key:
                 self.send_error_text(403, "Public link invalid or expired."); return
 
-            actual_file_path_abs = os.path.normpath(os.path.join(actual_root_dir_path, relative_file_path))
+            # For file system access, normalize separators in url_decoded_relative_file_from_path.
+            # This ensures that paths like "folder\\file.txt" (from a Windows-created link) 
+            # are correctly interpreted as "folder/file.txt" on Linux when accessing the file system.
+            # The original url_decoded_relative_file_from_path is used for the composite_key_for_lookup,
+            # which is correct as it must match the stored key verbatim.
+            fs_safe_relative_path = relative_file_path.replace('/', os.sep).replace('\\', os.sep)
+            
+            # Construct the absolute file path using the server's root directory and the now OS-normalized relative file path.
+            # Note: url_decoded_root_dir_from_path is derived from the URL and should represent one of the configured ROOT_DIRECTORIES.
+            actual_file_path_abs = os.path.normpath(os.path.join(actual_root_dir_path, fs_safe_relative_path))
+            
             if not os.path.isfile(actual_file_path_abs):
+                # Enhanced logging for debugging file access issues with public links
+                print(f"DEBUG: Public link file not found or is not a file.")
+                print(f"  Attempted to access: '{actual_file_path_abs}'")
+                print(f"  Based on URL Root Dir: '{actual_root_dir_path}'")
+                print(f"  Original Relative Path from URL: '{relative_file_path}'")
+                print(f"  Normalized Relative Path for FS: '{fs_safe_relative_path}'")
                 self.send_error_text(404, "Publicly linked file not found."); return
             
             self.serve_file_range(actual_file_path_abs)
@@ -556,9 +619,12 @@ class SecureHTTPRequestHandler(BaseHTTPRequestHandler):
                 save_public_links()
                 link_key = public_links[composite_key]
             
-            encoded_root = quote(root_dir_path_for_link)
-            encoded_relative_file = quote(relative_file)
-            public_url_path = f"/public/{encoded_root}/{encoded_relative_file}?key={link_key}"
+            # Encode root and relative file paths ensuring internal slashes are percent-encoded
+            # so they are treated as single opaque segments in the URL path.
+            url_safe_root_segment = quote(root_dir_path_for_link, safe='')
+            url_safe_relative_segment = quote(relative_file, safe='') # relative_file should be clean (no leading/trailing slashes ideally)
+            
+            public_url_path = f"/public/{url_safe_root_segment}/{url_safe_relative_segment}?key={link_key}"
             
             self.send_response(200)
             self.send_header('Content-type', 'application/json')
@@ -874,38 +940,45 @@ class SecureHTTPRequestHandler(BaseHTTPRequestHandler):
             post_data = self.rfile.read(content_length).decode()
             params = parse_qs(post_data)
             token = params.get('token', [''])[0]
-            new_path = params.get('new_root_path', [''])[0].strip()
+            new_path_raw = params.get('new_root_path', [''])[0].strip()
             if not self.is_valid_token(token) or self.get_token_role(token) != 'admin':
                 self.send_response_json_error(401, 'Unauthorized'); return
-            if not new_path: self.send_response_json_error(400, 'New root path cannot be empty.'); return
-            abs_new_path = os.path.abspath(new_path)
-            if abs_new_path in [os.path.abspath(p) for p in ROOT_DIRECTORIES]:
-                self.send_response_json_error(400, f"Normalized path '{abs_new_path}' already exists."); return
+            if not new_path_raw: self.send_response_json_error(400, 'New root path cannot be empty.'); return
+            
+            # Normalize and absolutize the new path
+            normalized_new_path = os.path.normpath(os.path.abspath(new_path_raw))
+            
+            if normalized_new_path in ROOT_DIRECTORIES: # Direct check since ROOT_DIRECTORIES are now normalized
+                self.send_response_json_error(400, f"Normalized path '{normalized_new_path}' already exists."); return
             try:
-                if not os.path.exists(abs_new_path): os.makedirs(abs_new_path)
-                elif not os.path.isdir(abs_new_path): self.send_response_json_error(400, f"Path '{abs_new_path}' exists but is not a directory."); return
-                ROOT_DIRECTORIES.append(abs_new_path); save_root_directories(ROOT_DIRECTORIES)
+                if not os.path.exists(normalized_new_path): os.makedirs(normalized_new_path)
+                elif not os.path.isdir(normalized_new_path): self.send_response_json_error(400, f"Path '{normalized_new_path}' exists but is not a directory."); return
+                ROOT_DIRECTORIES.append(normalized_new_path); save_root_directories(ROOT_DIRECTORIES)
                 self.send_response(200); self.send_header('Content-type', 'application/json'); self.end_headers()
-                self.wfile.write(json.dumps({'success': True, 'message': f"Root directory '{abs_new_path}' added."}).encode())
-            except Exception as e: self.send_response_json_error(500, f"Error with path '{new_path}': {e}"); return
+                self.wfile.write(json.dumps({'success': True, 'message': f"Root directory '{normalized_new_path}' added."}).encode())
+            except Exception as e: self.send_response_json_error(500, f"Error with path '{new_path_raw}' (resolved to '{normalized_new_path}'): {e}"); return
             return
         elif self.path == '/remove_root_dir':
             content_length = int(self.headers['Content-Length'])
             post_data = self.rfile.read(content_length).decode()
             params = parse_qs(post_data)
             token = params.get('token', [''])[0]
-            path_to_remove = params.get('root_dir_to_remove', [''])[0].strip()
+            path_to_remove_raw = params.get('root_dir_to_remove', [''])[0].strip()
             if not self.is_valid_token(token) or self.get_token_role(token) != 'admin':
                 self.send_response_json_error(401, 'Unauthorized'); return
-            if not path_to_remove: self.send_response_json_error(400, 'Path to remove cannot be empty.'); return
-            normalized_path_to_remove = os.path.abspath(path_to_remove)
-            if normalized_path_to_remove not in [os.path.abspath(p) for p in ROOT_DIRECTORIES]:
-                self.send_response_json_error(404, f"Root directory '{path_to_remove}' not found."); return
+            if not path_to_remove_raw: self.send_response_json_error(400, 'Path to remove cannot be empty.'); return
+
+            # Normalize and absolutize the path to remove for comparison
+            normalized_path_to_remove = os.path.normpath(os.path.abspath(path_to_remove_raw))
+
+            if normalized_path_to_remove not in ROOT_DIRECTORIES: # Direct check
+                self.send_response_json_error(404, f"Root directory '{path_to_remove_raw}' (resolved to '{normalized_path_to_remove}') not found."); return
             if len(ROOT_DIRECTORIES) <= 1: self.send_response_json_error(400, 'Cannot remove the last root directory.'); return
-            ROOT_DIRECTORIES = [p for p in ROOT_DIRECTORIES if os.path.abspath(p) != normalized_path_to_remove]
+            
+            ROOT_DIRECTORIES = [p for p in ROOT_DIRECTORIES if p != normalized_path_to_remove]
             save_root_directories(ROOT_DIRECTORIES)
             self.send_response(200); self.send_header('Content-type', 'application/json'); self.end_headers()
-            self.wfile.write(json.dumps({'success': True, 'message': f"Root directory '{path_to_remove}' removed."}).encode())
+            self.wfile.write(json.dumps({'success': True, 'message': f"Root directory '{path_to_remove_raw}' (resolved to '{normalized_path_to_remove}') removed."}).encode())
             return
         elif self.path == '/set_root_dir': # Deprecated
             self.send_response_json_error(410, 'This endpoint is deprecated.'); return
